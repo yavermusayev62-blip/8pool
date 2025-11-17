@@ -2,6 +2,7 @@ package com.poolmod.menu
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 
 object GameDetector {
@@ -22,17 +23,30 @@ object GameDetector {
         
         for (packageName in POOL_PACKAGES) {
             try {
-                val packageInfo = pm.getPackageInfo(packageName, 0)
+                @Suppress("DEPRECATION")
+                val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+                } else {
+                    pm.getPackageInfo(packageName, 0)
+                }
+                
                 if (packageInfo != null) {
                     val appInfo = pm.getApplicationInfo(packageName, 0)
                     val appName = pm.getApplicationLabel(appInfo).toString()
                     
                     Log.d(TAG, "Oyun bulundu: $packageName - $appName")
                     
+                    val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        packageInfo.longVersionCode
+                    } else {
+                        @Suppress("DEPRECATION")
+                        packageInfo.versionCode.toLong()
+                    }
+                    
                     return GameInfo(
                         packageName = packageName,
                         appName = appName,
-                        versionCode = packageInfo.longVersionCode,
+                        versionCode = versionCode,
                         versionName = packageInfo.versionName ?: "Unknown"
                     )
                 }

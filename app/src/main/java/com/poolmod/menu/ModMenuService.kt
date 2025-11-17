@@ -42,17 +42,25 @@ class ModMenuService : Service() {
 
     private val screenshotReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == ScreenCaptureService.ACTION_SCREENSHOT_READY) {
-                val byteArray = intent.getByteArrayExtra("bitmap_data")
-                val width = intent.getIntExtra("width", 0)
-                val height = intent.getIntExtra("height", 0)
-                
-                if (byteArray != null && width > 0 && height > 0) {
-                    val bitmap = BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
-                    if (bitmap != null) {
-                        onScreenshotReceived(bitmap)
+            try {
+                if (intent?.action == ScreenCaptureService.ACTION_SCREENSHOT_READY) {
+                    val byteArray = intent.getByteArrayExtra("bitmap_data")
+                    val width = intent.getIntExtra("width", 0)
+                    val height = intent.getIntExtra("height", 0)
+                    
+                    if (byteArray != null && byteArray.isNotEmpty() && width > 0 && height > 0) {
+                        val bitmap = BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
+                        if (bitmap != null && !bitmap.isRecycled) {
+                            onScreenshotReceived(bitmap)
+                        } else {
+                            Log.w("ModMenuService", "Bitmap decode edilemedi veya zaten recycle edilmiş")
+                        }
+                    } else {
+                        Log.w("ModMenuService", "Geçersiz bitmap verisi: byteArray=${byteArray != null}, width=$width, height=$height")
                     }
                 }
+            } catch (e: Exception) {
+                Log.e("ModMenuService", "Screenshot receiver hatası: ${e.message}", e)
             }
         }
     }
@@ -61,6 +69,11 @@ class ModMenuService : Service() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         modConfig = ModMenuConfig(this) // Context artık hazır
+        
+        // State'leri config'den yükle
+        isTrajectoryEnabled = modConfig.isModEnabled(ModMenuConfig.MOD_BALL_TRAJECTORY)
+        isAutoAimEnabled = modConfig.isModEnabled(ModMenuConfig.MOD_AUTO_AIM)
+        
         createNotificationChannel()
         startForeground(1, createNotification())
         
@@ -661,7 +674,12 @@ class ModMenuService : Service() {
 
 
     private fun toggleTrajectory() {
-        isTrajectoryEnabled = !isTrajectoryEnabled
+        // Önce mevcut durumu oku, sonra toggle et
+        val currentState = modConfig.isModEnabled(ModMenuConfig.MOD_BALL_TRAJECTORY)
+        isTrajectoryEnabled = !currentState
+        
+        // Yeni durumu kaydet
+        modConfig.setModEnabled(ModMenuConfig.MOD_BALL_TRAJECTORY, isTrajectoryEnabled)
         
         if (isTrajectoryEnabled) {
             // OverlayDrawView'ı ekle (eğer yoksa)
@@ -671,6 +689,8 @@ class ModMenuService : Service() {
         } else {
             stopScreenCapture()
             overlayDrawView?.clear()
+            // Trajectory verilerini temizle
+            currentTrajectories = emptyList()
             // Eğer auto aim de kapalıysa overlayDrawView'ı kaldır
             if (!isAutoAimEnabled) {
                 hideOverlayDrawView()
@@ -689,27 +709,49 @@ class ModMenuService : Service() {
     }
 
     fun startScreenCapture(resultCode: Int, resultData: Intent?) {
-        if (resultCode == -1 || resultData == null) return
-
-        val intent = Intent(this, ScreenCaptureService::class.java).apply {
-            action = ScreenCaptureService.ACTION_START
-            putExtra("result_code", resultCode)
-            putExtra("result_data", resultData)
+        if (resultCode == -1 || resultData == null) {
+            Log.w("ModMenuService", "Screen capture başlatılamadı: resultCode=$resultCode, resultData=${resultData != null}")
+            return
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        try {
+            val intent = Intent(this, ScreenCaptureService::class.java).apply {
+                action = ScreenCaptureService.ACTION_START
+                putExtra("result_code", resultCode)
+                putExtra("result_data", resultData)
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.e("ModMenuService", "Screen capture servisi başlatılamadı: ${e.message}", e)
+            android.widget.Toast.makeText(this, "Ekran yakalama başlatılamadı", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
 
     private fun onScreenshotReceived(bitmap: Bitmap) {
-        if (!isTrajectoryEnabled && !isAutoAimEnabled) return
+        if (!isTrajectoryEnabled && !isAutoAimEnabled) {
+            // Bitmap kullanılmadığı için recycle et
+            try {
+                bitmap.recycle()
+            } catch (e: Exception) {
+                Log.w("ModMenuService", "Bitmap recycle hatası: ${e.message}")
+            }
+            return
+        }
 
         handler.post {
             try {
+                // Bitmap geçerliliğini kontrol et
+                if (bitmap.isRecycled) {
+                    Log.w("ModMenuService", "Bitmap zaten recycle edilmiş")
+                    return@post
+                }
+                
                 // Topları tespit et
                 val detectedBalls = BallDetector.detectBalls(bitmap)
                 currentBalls = detectedBalls
@@ -770,6 +812,15 @@ class ModMenuService : Service() {
                 )
             } catch (e: Exception) {
                 Log.e("ModMenuService", "Ekran işleme hatası: ${e.message}", e)
+            } finally {
+                // Bitmap'i temizle (artık kullanılmayacak)
+                try {
+                    if (!bitmap.isRecycled) {
+                        bitmap.recycle()
+                    }
+                } catch (e: Exception) {
+                    Log.w("ModMenuService", "Bitmap recycle hatası: ${e.message}")
+                }
             }
         }
     }
@@ -778,7 +829,12 @@ class ModMenuService : Service() {
      * Auto Aim'i aç/kapat
      */
     private fun toggleAutoAim() {
-        isAutoAimEnabled = modConfig.isModEnabled(ModMenuConfig.MOD_AUTO_AIM)
+        // Önce mevcut durumu oku, sonra toggle et
+        val currentState = modConfig.isModEnabled(ModMenuConfig.MOD_AUTO_AIM)
+        isAutoAimEnabled = !currentState
+        
+        // Yeni durumu kaydet
+        modConfig.setModEnabled(ModMenuConfig.MOD_AUTO_AIM, isAutoAimEnabled)
         
         if (isAutoAimEnabled) {
             // OverlayDrawView'ı ekle (eğer yoksa)
@@ -788,6 +844,8 @@ class ModMenuService : Service() {
                 requestScreenCapturePermission()
             }
         } else {
+            // Auto aim kapatıldığında hedefi temizle
+            currentAutoAimTarget = null
             // Eğer trajectory de kapalıysa overlayDrawView'ı kaldır
             if (!isTrajectoryEnabled) {
                 hideOverlayDrawView()
@@ -821,11 +879,16 @@ class ModMenuService : Service() {
     }
 
     private fun stopScreenCapture() {
-        val intent = Intent(this, ScreenCaptureService::class.java).apply {
-            action = ScreenCaptureService.ACTION_STOP
+        try {
+            val intent = Intent(this, ScreenCaptureService::class.java).apply {
+                action = ScreenCaptureService.ACTION_STOP
+            }
+            stopService(intent)
+            // State'i değiştirme - sadece servisi durdur
+            // State toggleTrajectory() tarafından yönetiliyor
+        } catch (e: Exception) {
+            Log.e("ModMenuService", "Screen capture durdurulamadı: ${e.message}", e)
         }
-        stopService(intent)
-        isTrajectoryEnabled = false
     }
 
     override fun onDestroy() {

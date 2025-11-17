@@ -51,7 +51,13 @@ class ScreenCaptureService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val resultCode = intent.getIntExtra("result_code", -1)
-                val resultData = intent.getParcelableExtra<Intent>("result_data")
+                @Suppress("ExplicitTypeArguments")
+                val resultData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra("result_data", Intent::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra<Intent>("result_data")
+                }
                 
                 if (resultCode != -1 && resultData != null) {
                     startCapture(resultCode, resultData)
@@ -76,10 +82,17 @@ class ScreenCaptureService : Service() {
             
             imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             imageReader?.setOnImageAvailableListener({ reader ->
-                val image = reader.acquireLatestImage()
-                if (image != null) {
-                    processImage(image)
-                    image.close()
+                var image: Image? = null
+                try {
+                    image = reader.acquireLatestImage()
+                    if (image != null) {
+                        processImage(image)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Image işleme hatası: ${e.message}", e)
+                } finally {
+                    // Image'i mutlaka kapat
+                    image?.close()
                 }
             }, handler)
             
@@ -118,14 +131,26 @@ class ScreenCaptureService : Service() {
     }
 
     private fun processImage(image: Image) {
+        var bitmap: Bitmap? = null
+        var croppedBitmap: Bitmap? = null
         try {
             val planes = image.planes
+            if (planes.isEmpty()) {
+                Log.w(TAG, "Image planes boş")
+                return
+            }
+            
             val buffer = planes[0].buffer
             val pixelStride = planes[0].pixelStride
             val rowStride = planes[0].rowStride
             val rowPadding = rowStride - pixelStride * screenWidth
             
-            val bitmap = Bitmap.createBitmap(
+            if (pixelStride == 0) {
+                Log.w(TAG, "Pixel stride 0, görüntü işlenemiyor")
+                return
+            }
+            
+            bitmap = Bitmap.createBitmap(
                 screenWidth + rowPadding / pixelStride,
                 screenHeight,
                 Bitmap.Config.ARGB_8888
@@ -133,14 +158,20 @@ class ScreenCaptureService : Service() {
             bitmap.copyPixelsFromBuffer(buffer)
             
             // Kareyi kırp
-            val croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
+            croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
             bitmap.recycle()
+            bitmap = null
             
             // Broadcast gönder
             sendBitmapBroadcast(croppedBitmap)
+            croppedBitmap = null // sendBitmapBroadcast içinde recycle edilecek
             
         } catch (e: Exception) {
             Log.e(TAG, "Görüntü işleme hatası: ${e.message}", e)
+        } finally {
+            // Güvenli temizlik
+            bitmap?.recycle()
+            croppedBitmap?.recycle()
         }
     }
     
@@ -148,8 +179,21 @@ class ScreenCaptureService : Service() {
         try {
             // Bitmap'i byte array'e çevir (küçük boyut için)
             val outputStream = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
+            val compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
+            
+            if (!compressed) {
+                Log.w(TAG, "Bitmap sıkıştırılamadı")
+                bitmap.recycle()
+                return
+            }
+            
             val byteArray = outputStream.toByteArray()
+            
+            if (byteArray.isEmpty()) {
+                Log.w(TAG, "Bitmap byte array boş")
+                bitmap.recycle()
+                return
+            }
             
             val intent = Intent(ACTION_SCREENSHOT_READY).apply {
                 putExtra("bitmap_data", byteArray)
@@ -162,6 +206,12 @@ class ScreenCaptureService : Service() {
             bitmap.recycle()
         } catch (e: Exception) {
             Log.e(TAG, "Broadcast gönderme hatası: ${e.message}", e)
+            // Hata durumunda da bitmap'i temizle
+            try {
+                bitmap.recycle()
+            } catch (ex: Exception) {
+                Log.e(TAG, "Bitmap recycle hatası: ${ex.message}")
+            }
         }
     }
 

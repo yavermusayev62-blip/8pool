@@ -1,4 +1,4 @@
-com.poolmod.menu.test.app-androidTest-0 C:\Users\nesib\OneDrive\Masaüstü\8 pool\YeniProje\app\build\generated\res\resValues\androidTest\debug
-com.poolmod.menu.test.app-mergeDebugAndroidTestResources-1 C:\Users\nesib\OneDrive\Masaüstü\8 pool\YeniProje\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\merged.dir
-com.poolmod.menu.test.app-mergeDebugAndroidTestResources-2 C:\Users\nesib\OneDrive\Masaüstü\8 pool\YeniProje\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\stripped.dir
-com.poolmod.menu.test.app-merged_res-3 C:\Users\nesib\OneDrive\Masaüstü\8 pool\YeniProje\app\build\intermediates\merged_res\debugAndroidTest
+com.poolmod.menu.test.app-androidTest-0 C:\Users\User\Desktop\8 pool\8 pool\YeniProje\app\build\generated\res\resValues\androidTest\debug
+com.poolmod.menu.test.app-mergeDebugAndroidTestResources-1 C:\Users\User\Desktop\8 pool\8 pool\YeniProje\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\merged.dir
+com.poolmod.menu.test.app-mergeDebugAndroidTestResources-2 C:\Users\User\Desktop\8 pool\8 pool\YeniProje\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\stripped.dir
+com.poolmod.menu.test.app-merged_res-3 C:\Users\User\Desktop\8 pool\8 pool\YeniProje\app\build\intermediates\merged_res\debugAndroidTest
