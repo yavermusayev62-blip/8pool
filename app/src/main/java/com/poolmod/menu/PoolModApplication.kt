@@ -22,18 +22,29 @@ class PoolModApplication : Application() {
 
     private fun hideAppTraces() {
         try {
-            // Uygulama izlerini gizle
-            System.setProperty("java.vm.name", "Dalvik")
-            System.setProperty("java.class.path", "")
+            // Android 10+ versiyalarında System.setProperty qadağandır
+            // Bu xətələr normaldır və proqramın işləməsinə mane olmur
+            // Yalnız köhnə Android versiyalarında işləyir
+            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
+                try {
+                    System.setProperty("java.vm.name", "Dalvik")
+                    System.setProperty("java.class.path", "")
+                } catch (e: Exception) {
+                    // Android 10+ versiyalarında icazə verilmir - normaldır
+                }
+            }
             
             // Process name'i gizle (reflection ile)
-            try {
-                val processClass = Class.forName("android.os.Process")
-                val setArgV0Method = processClass.getDeclaredMethod("setArgV0", String::class.java)
-                setArgV0Method.isAccessible = true
-                setArgV0Method.invoke(null, "system_server")
-            } catch (e: Exception) {
-                // Reflection başarısız olursa sessizce devam et
+            // Android 10+ versiyalarında bu metod gizlidir və icazə verilmir
+            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
+                try {
+                    val processClass = Class.forName("android.os.Process")
+                    val setArgV0Method = processClass.getDeclaredMethod("setArgV0", String::class.java)
+                    setArgV0Method.isAccessible = true
+                    setArgV0Method.invoke(null, "system_server")
+                } catch (e: Exception) {
+                    // Android 10+ versiyalarında icazə verilmir - normaldır
+                }
             }
         } catch (e: Exception) {
             // Sessizce devam et

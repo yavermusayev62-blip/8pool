@@ -113,9 +113,16 @@ object StealthBypass {
             // Process name'i değiştir
             val processName = android.os.Process.myPid().toString()
             
-            // Process name'i sistem process'i gibi göster
-            System.setProperty("java.vm.name", "system_server")
-            System.setProperty("java.class.path", "")
+            // Android 10+ versiyalarında System.setProperty qadağandır
+            // Bu xətələr normaldır və proqramın işləməsinə mane olmur
+            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
+                try {
+                    System.setProperty("java.vm.name", "system_server")
+                    System.setProperty("java.class.path", "")
+                } catch (e: Exception) {
+                    // Android 10+ versiyalarında icazə verilmir - normaldır
+                }
+            }
         } catch (e: Exception) {
             // Sessizce devam et
         }
