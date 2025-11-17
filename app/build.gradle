@@ -1,0 +1,94 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+// Version bilgilerini dinamik olarak oluştur
+def getVersionCode = {
+    // Epoch time'ın son 8 hanesini kullan (her build'de farklı)
+    // Bu şekilde Integer.MAX_VALUE (2,147,483,647) sınırını aşmaz
+    // Her saniye farklı bir version code üretir
+    def epochSeconds = (long)(System.currentTimeMillis() / 1000)
+    // Son 8 haneyi al (maksimum: 99,999,999 - güvenli)
+    return (int)(epochSeconds % 100000000)
+}
+
+def getVersionName = {
+    // Timestamp'ten version name oluştur
+    // Format: 1.0.YYMMDD-HHmm (örn: 1.0.241215-1430)
+    def date = new Date()
+    def formattedDate = date.format('yyMMdd-HHmm')
+    return "1.0.${formattedDate}"
+}
+
+android {
+    namespace 'com.poolmod.menu'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.poolmod.menu"
+        minSdk 21
+        targetSdk 34
+        versionCode getVersionCode()
+        versionName getVersionName()
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.2'
+    implementation 'androidx.lifecycle:lifecycle-service:2.6.2'
+    implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+}
+
+// Build öncesi eski APK'ları temizle
+task cleanOldApks(type: Delete) {
+    delete fileTree(dir: "${project.buildDir}/outputs/apk", include: "*.apk")
+    delete fileTree(dir: "${project.buildDir}/intermediates/apk", include: "*.apk")
+    println "🧹 Eski APK'lar temizlendi"
+}
+
+// Android plugin yüklendikten sonra task'ları bağla
+afterEvaluate {
+    // assembleDebug ve assembleRelease'den önce cleanOldApks çalıştır
+    if (tasks.findByName('assembleDebug')) {
+        tasks.assembleDebug.dependsOn cleanOldApks
+    }
+    if (tasks.findByName('assembleRelease')) {
+        tasks.assembleRelease.dependsOn cleanOldApks
+    }
+    
+    // Her build task'ından önce eski APK'ları sil
+    tasks.matching { it.name.startsWith('assemble') }.all { task ->
+        task.doFirst {
+            println "🧹 Eski APK'lar temizleniyor..."
+            delete fileTree(dir: "${project.buildDir}/outputs/apk", include: "*.apk")
+            delete fileTree(dir: "${project.buildDir}/intermediates/apk", include: "*.apk")
+            println "✅ Eski APK'lar silindi - Yeni version: ${android.defaultConfig.versionName} (${android.defaultConfig.versionCode})"
+        }
+    }
+}
+
