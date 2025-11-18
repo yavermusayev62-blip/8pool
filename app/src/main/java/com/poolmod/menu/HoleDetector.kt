@@ -20,8 +20,17 @@ object HoleDetector {
 
     /**
      * Ekran görüntüsünden delikleri tespit et
+     * @param offsetX X ekseni offset (piksel)
+     * @param offsetY Y ekseni offset (piksel)
+     * @param scale Delik pozisyonlarının ölçeklendirme faktörü (1.0 = normal, >1.0 = büyük, <1.0 = küçük)
      */
-    fun detectHoles(bitmap: Bitmap, tableBounds: BallDetector.TableBounds?): List<Hole> {
+    fun detectHoles(
+        bitmap: Bitmap, 
+        tableBounds: BallDetector.TableBounds?,
+        offsetX: Float = 0f,
+        offsetY: Float = 0f,
+        scale: Float = 1f
+    ): List<Hole> {
         val holes = mutableListOf<Hole>()
         
         try {
@@ -36,49 +45,53 @@ object HoleDetector {
             val tableHeight = bounds.bottom - bounds.top
             
             // Delik pozisyonları (masa boyutuna göre)
-            val cornerRadius = minOf(tableWidth, tableHeight) / 25f
-            val edgeRadius = minOf(tableWidth, tableHeight) / 30f
+            val cornerRadius = (minOf(tableWidth, tableHeight) / 25f) * scale
+            val edgeRadius = (minOf(tableWidth, tableHeight) / 30f) * scale
             
-            // Köşe delikleri
+            // Masa merkezini hesapla (scale için referans noktası)
+            val centerX = bounds.left + tableWidth / 2f
+            val centerY = bounds.top + tableHeight / 2f
+            
+            // Köşe delikleri (offset ve scale uygulanarak)
             holes.add(Hole(
-                x = bounds.left + cornerRadius,
-                y = bounds.top + cornerRadius,
+                x = (bounds.left + cornerRadius - centerX) * scale + centerX + offsetX,
+                y = (bounds.top + cornerRadius - centerY) * scale + centerY + offsetY,
                 radius = cornerRadius,
                 number = 1
             ))
             
             holes.add(Hole(
-                x = bounds.right - cornerRadius,
-                y = bounds.top + cornerRadius,
+                x = (bounds.right - cornerRadius - centerX) * scale + centerX + offsetX,
+                y = (bounds.top + cornerRadius - centerY) * scale + centerY + offsetY,
                 radius = cornerRadius,
                 number = 2
             ))
             
             holes.add(Hole(
-                x = bounds.left + cornerRadius,
-                y = bounds.bottom - cornerRadius,
+                x = (bounds.left + cornerRadius - centerX) * scale + centerX + offsetX,
+                y = (bounds.bottom - cornerRadius - centerY) * scale + centerY + offsetY,
                 radius = cornerRadius,
                 number = 3
             ))
             
             holes.add(Hole(
-                x = bounds.right - cornerRadius,
-                y = bounds.bottom - cornerRadius,
+                x = (bounds.right - cornerRadius - centerX) * scale + centerX + offsetX,
+                y = (bounds.bottom - cornerRadius - centerY) * scale + centerY + offsetY,
                 radius = cornerRadius,
                 number = 4
             ))
             
             // Kenar delikleri (üst ve alt ortada)
             holes.add(Hole(
-                x = bounds.left + tableWidth / 2f,
-                y = bounds.top + edgeRadius,
+                x = (bounds.left + tableWidth / 2f - centerX) * scale + centerX + offsetX,
+                y = (bounds.top + edgeRadius - centerY) * scale + centerY + offsetY,
                 radius = edgeRadius,
                 number = 5
             ))
             
             holes.add(Hole(
-                x = bounds.left + tableWidth / 2f,
-                y = bounds.bottom - edgeRadius,
+                x = (bounds.left + tableWidth / 2f - centerX) * scale + centerX + offsetX,
+                y = (bounds.bottom - edgeRadius - centerY) * scale + centerY + offsetY,
                 radius = edgeRadius,
                 number = 6
             ))
@@ -86,7 +99,7 @@ object HoleDetector {
             // Görsel doğrulama için delikleri kontrol et
             val verifiedHoles = verifyHoles(bitmap, holes, bounds)
             
-            Log.d(TAG, "${verifiedHoles.size} delik tespit edildi")
+            Log.d(TAG, "${verifiedHoles.size} delik tespit edildi (offsetX=$offsetX, offsetY=$offsetY, scale=$scale)")
             return verifiedHoles
             
         } catch (e: Exception) {

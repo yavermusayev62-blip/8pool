@@ -28,6 +28,31 @@ class ModMenuConfig(context: Context) {
         prefs.edit().clear().apply()
     }
 
+    // Delik pozisyon ayarları
+    fun getHoleOffsetX(): Float {
+        return prefs.getFloat("hole_offset_x", 0f)
+    }
+
+    fun setHoleOffsetX(offset: Float) {
+        prefs.edit().putFloat("hole_offset_x", offset).apply()
+    }
+
+    fun getHoleOffsetY(): Float {
+        return prefs.getFloat("hole_offset_y", 0f)
+    }
+
+    fun setHoleOffsetY(offset: Float) {
+        prefs.edit().putFloat("hole_offset_y", offset).apply()
+    }
+
+    fun getHoleScale(): Float {
+        return prefs.getFloat("hole_scale", 1f)
+    }
+
+    fun setHoleScale(scale: Float) {
+        prefs.edit().putFloat("hole_scale", scale).apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "pool_mod_config"
 

@@ -1,6 +1,7 @@
 package com.poolmod.menu
 
 import android.app.*
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -36,6 +37,18 @@ class ScreenCaptureService : Service() {
     
     private var isCapturing = false
     private val captureInterval = 500L // 500ms (2 FPS - performans için)
+    
+    // MediaProjection callback - Android 15+ için zorunlu
+    private val mediaProjectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            Log.w(TAG, "⚠️ MediaProjection.Callback.onStop() çağrıldı - MediaProjection sistem tarafından durduruldu!")
+            Log.w(TAG, "  Bu genellikle kullanıcı ekran kaydını iptal ettiğinde veya sistem tarafından zorunlu durdurulduğunda olur")
+            android.util.Log.w(TAG, "⚠️ MediaProjection durduruldu - otomatik temizlik yapılıyor (isCapturing=$isCapturing)")
+            handler.post {
+                stopCapture()
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -48,6 +61,13 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android 8.0+ için: startForegroundService() çağrıldıysa 5 saniye içinde
+        // startForeground() çağırmalıyız, yoksa crash olur.
+        // Intent işlenmeden önce hemen çağırmalıyız.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForeground(1, createNotification())
+        }
+        
         when (intent?.action) {
             ACTION_START -> {
                 val resultCode = intent.getIntExtra("result_code", -1)
@@ -59,9 +79,14 @@ class ScreenCaptureService : Service() {
                     intent.getParcelableExtra<Intent>("result_data")
                 }
                 
-                if (resultCode != -1 && resultData != null) {
-                    startCapture(resultCode, resultData)
+                if (resultCode != Activity.RESULT_OK || resultData == null) {
+                    Log.e(TAG, "❌ Screen capture başlatılamadı: resultCode=$resultCode (RESULT_OK=${Activity.RESULT_OK}), resultData=${resultData != null}")
+                    // Notification zaten gösterildi, servisi durdur
+                    stopSelf()
+                    return START_NOT_STICKY
                 }
+                
+                startCapture(resultCode, resultData)
             }
             ACTION_STOP -> {
                 stopCapture()
@@ -79,6 +104,10 @@ class ScreenCaptureService : Service() {
         try {
             val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+            
+            // Android 15+ için callback kaydet (createVirtualDisplay öncesi zorunlu)
+            mediaProjection?.registerCallback(mediaProjectionCallback, handler)
+            Log.d(TAG, "✅ MediaProjection callback kaydedildi")
             
             imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             imageReader?.setOnImageAvailableListener({ reader ->
@@ -108,14 +137,26 @@ class ScreenCaptureService : Service() {
             )
             
             isCapturing = true
-            startForeground(1, createNotification())
+            // startForeground() zaten onStartCommand() içinde çağrıldı,
+            // ama notification'ı güncellememiz gerekebilir
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // Notification'ı güncelle (zaten foreground'dayız)
+                val notificationManager = getSystemService(NotificationManager::class.java)
+                notificationManager.notify(1, createNotification())
+            }
             
             // Periyodik yakalama başlat
             startPeriodicCapture()
             
-            Log.d(TAG, "Ekran yakalama başlatıldı")
+            Log.d(TAG, "✅ Ekran yakalama başlatıldı (isCapturing=$isCapturing)")
+            // ModMenuService'e başarılı başlatma bildir
+            sendCaptureStateBroadcast(true)
         } catch (e: Exception) {
-            Log.e(TAG, "Ekran yakalama hatası: ${e.message}", e)
+            Log.e(TAG, "❌ Ekran yakalama hatası: ${e.message}", e)
+            isCapturing = false
+            // ModMenuService'e hata bildir
+            sendCaptureStateBroadcast(false)
+            stopSelf()
         }
     }
 
@@ -216,7 +257,23 @@ class ScreenCaptureService : Service() {
     }
 
     private fun stopCapture() {
+        if (!isCapturing) {
+            Log.d(TAG, "stopCapture() çağrıldı ama isCapturing zaten false - atlanıyor")
+            return // Zaten durdurulmuş
+        }
+        
+        val wasCapturing = isCapturing
         isCapturing = false
+        
+        Log.d(TAG, "stopCapture() başlatılıyor - isCapturing: $wasCapturing -> false")
+        
+        // Callback'i kaldır
+        try {
+            mediaProjection?.unregisterCallback(mediaProjectionCallback)
+            Log.d(TAG, "✅ MediaProjection callback kaldırıldı")
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaProjection callback kaldırma hatası: ${e.message}")
+        }
         
         virtualDisplay?.release()
         virtualDisplay = null
@@ -224,10 +281,29 @@ class ScreenCaptureService : Service() {
         imageReader?.close()
         imageReader = null
         
-        mediaProjection?.stop()
+        try {
+            mediaProjection?.stop()
+            Log.d(TAG, "✅ MediaProjection stop() çağrıldı")
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaProjection stop hatası: ${e.message}")
+        }
         mediaProjection = null
         
-        Log.d(TAG, "Ekran yakalama durduruldu")
+        Log.d(TAG, "✅ Ekran yakalama durduruldu")
+        // ModMenuService'e durdurma bildir
+        sendCaptureStateBroadcast(false)
+    }
+    
+    private fun sendCaptureStateBroadcast(isRunning: Boolean) {
+        try {
+            val intent = Intent(ACTION_CAPTURE_STATE_CHANGED).apply {
+                putExtra("is_running", isRunning)
+            }
+            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+            Log.d(TAG, "✅ Capture state broadcast gönderildi: isRunning=$isRunning")
+        } catch (e: Exception) {
+            Log.e(TAG, "Capture state broadcast hatası: ${e.message}", e)
+        }
     }
 
     override fun onDestroy() {
@@ -264,6 +340,7 @@ class ScreenCaptureService : Service() {
         const val ACTION_START = "com.poolmod.menu.SCREEN_CAPTURE_START"
         const val ACTION_STOP = "com.poolmod.menu.SCREEN_CAPTURE_STOP"
         const val ACTION_SCREENSHOT_READY = "com.poolmod.menu.SCREENSHOT_READY"
+        const val ACTION_CAPTURE_STATE_CHANGED = "com.poolmod.menu.CAPTURE_STATE_CHANGED"
         private const val CHANNEL_ID = "screen_capture_channel"
         private const val TAG = "ScreenCaptureService"
     }

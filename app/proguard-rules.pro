@@ -8,8 +8,8 @@
     native <methods>;
 }
 
-# Obfuscate class names
--obfuscate
+# Obfuscation is enabled by default in ProGuard
+# No need for -obfuscate flag (it's not a valid ProGuard option)
 
 # Keep application class
 -keep class com.poolmod.menu.PoolModApplication { *; }

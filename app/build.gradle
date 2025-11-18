@@ -3,22 +3,57 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
-// Version bilgilerini dinamik olarak oluştur
+// Version bilgilerini version.properties faylından oxu və artır
+def versionPropertiesFile = file('version.properties')
+def versionProperties = new Properties()
+
+// Əgər fayl yoxdursa, default dəyərlərlə yarat
+if (!versionPropertiesFile.exists()) {
+    versionPropertiesFile.createNewFile()
+    versionProperties['VERSION_MAJOR'] = '1'
+    versionProperties['VERSION_MINOR'] = '0'
+    versionProperties['VERSION_PATCH'] = '0'
+    versionProperties['VERSION_CODE'] = '1'
+    versionProperties.store(versionPropertiesFile.newWriter(), null)
+}
+
+// Mövcud versiya məlumatlarını oxu
+versionProperties.load(versionPropertiesFile.newDataInputStream())
+
+// Versiya artırma funksiyası (hər build-də çağrılacaq)
+def incrementVersion = {
+    // VERSION_PATCH-ni artır
+    def patch = versionProperties['VERSION_PATCH'].toInteger()
+    def newPatch = patch + 1
+    versionProperties['VERSION_PATCH'] = newPatch.toString()
+    
+    // VERSION_CODE-nu artır
+    def currentCode = versionProperties['VERSION_CODE'].toInteger()
+    def newCode = currentCode + 1
+    versionProperties['VERSION_CODE'] = newCode.toString()
+    
+    // Yadda saxla
+    versionProperties.store(versionPropertiesFile.newWriter(), null)
+    versionProperties.load(versionPropertiesFile.newDataInputStream()) // Yenidən yüklə
+    
+    def major = versionProperties['VERSION_MAJOR'] ?: '1'
+    def minor = versionProperties['VERSION_MINOR'] ?: '0'
+    def versionName = "${major}.${minor}.${newPatch}"
+    println "📦 Version artırıldı: $versionName (Code: $newCode)"
+    
+    return [code: newCode, name: versionName]
+}
+
+// Versiyanı artır (hər build-də)
+def versionInfo = incrementVersion()
+
+// Versiya oxuma funksiyaları
 def getVersionCode = {
-    // Epoch time'ın son 8 hanesini kullan (her build'de farklı)
-    // Bu şekilde Integer.MAX_VALUE (2,147,483,647) sınırını aşmaz
-    // Her saniye farklı bir version code üretir
-    def epochSeconds = (long)(System.currentTimeMillis() / 1000)
-    // Son 8 haneyi al (maksimum: 99,999,999 - güvenli)
-    return (int)(epochSeconds % 100000000)
+    return versionInfo.code
 }
 
 def getVersionName = {
-    // Timestamp'ten version name oluştur
-    // Format: 1.0.YYMMDD-HHmm (örn: 1.0.241215-1430)
-    def date = new Date()
-    def formattedDate = date.format('yyMMdd-HHmm')
-    return "1.0.${formattedDate}"
+    return versionInfo.name
 }
 
 android {
@@ -62,6 +97,9 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.2'
     implementation 'androidx.lifecycle:lifecycle-service:2.6.2'
     implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+    // Kotlin Coroutines for background processing
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3'
 }
 
 // Build öncesi eski APK'ları temizle

@@ -8,16 +8,33 @@ class PoolModApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         
-        // Güçlü stealth bypass başlat (25. parti yazılım tespitini bypass eder)
-        StealthBypass.init(this)
+        // Debug Logger'ı başlat (ilk önce - hataları yakalamak için)
+        DebugLogger.init(this)
+        DebugLogger.logProcessEvent("PoolModApplication", "PROCESS_STARTED", 
+            android.os.Process.myPid(), packageName)
+        DebugLogger.logInfo("PoolModApplication", "Uygulama başlatılıyor...")
         
-        // Anti-cheat bypass başlat
-        AntiCheatBypass.init(this)
+        // Crash Handler'ı ayarla
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler(CrashHandler(defaultHandler))
+        DebugLogger.logInfo("PoolModApplication", "Crash handler ayarlandı")
         
-        // Log temizleme (anti-detection)
-        hideAppTraces()
-        
-        Log.d("PoolMod", "Stealth bypass aktif - Uygulama sistem paketi gibi görünüyor")
+        try {
+            // Güçlü stealth bypass başlat (25. parti yazılım tespitini bypass eder)
+            StealthBypass.init(this)
+            
+            // Anti-cheat bypass başlat
+            AntiCheatBypass.init(this)
+            
+            // Log temizleme (anti-detection)
+            hideAppTraces()
+            
+            DebugLogger.logInfo("PoolMod", "Stealth bypass aktif - Uygulama sistem paketi gibi görünüyor")
+            Log.d("PoolMod", "Stealth bypass aktif - Uygulama sistem paketi gibi görünüyor")
+        } catch (e: Exception) {
+            DebugLogger.logException("PoolModApplication", "onCreate hatası", e)
+            throw e
+        }
     }
 
     private fun hideAppTraces() {

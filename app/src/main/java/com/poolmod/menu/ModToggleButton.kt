@@ -57,10 +57,25 @@ class ModToggleButton(context: Context) : TextView(context) {
         isClickable = true
         isFocusable = true // Touch event'ler için focusable olmalı
         isFocusableInTouchMode = true
+        isEnabled = true
+        isLongClickable = false
         visibility = View.VISIBLE
         alpha = 1.0f
         setWillNotDraw(false) // Zorla çiz
         elevation = 10f // Gölge ekle
+        
+        // Touch event-lərin işləməsi üçün - daha yaxşı yanaşma
+        setOnTouchListener { view, event ->
+            // ACTION_CANCEL için log spam'ini azalt
+            if (event.action != MotionEvent.ACTION_CANCEL) {
+                android.util.Log.d("ModToggleButton", "🔴 setOnTouchListener çağrıldı! action=${event.action}, x=${event.x}, y=${event.y}")
+            }
+            val result = onTouchEvent(event)
+            if (event.action != MotionEvent.ACTION_CANCEL) {
+                android.util.Log.d("ModToggleButton", "setOnTouchListener result: $result")
+            }
+            result
+        }
         
         android.util.Log.d("ModToggleButton", "🔵 setupButton() tamamlandı")
         android.util.Log.d("ModToggleButton", "isClickable=$isClickable, isFocusable=$isFocusable, isFocusableInTouchMode=$isFocusableInTouchMode")
@@ -111,11 +126,27 @@ class ModToggleButton(context: Context) : TextView(context) {
 
     var onPositionUpdate: ((Int, Int) -> Unit)? = null
 
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        // ACTION_CANCEL için log spam'ini azalt
+        if (event.action != MotionEvent.ACTION_CANCEL) {
+            android.util.Log.d("ModToggleButton", "🔴 dispatchTouchEvent çağrıldı! action=${event.action}")
+        }
+        val result = super.dispatchTouchEvent(event)
+        if (event.action != MotionEvent.ACTION_CANCEL) {
+            android.util.Log.d("ModToggleButton", "dispatchTouchEvent result: $result")
+        }
+        return result
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        android.util.Log.d("ModToggleButton", "🔵🔵🔵 onTouchEvent çağrıldı! action=${event.action}, rawX=${event.rawX}, rawY=${event.rawY}")
-        android.util.Log.d("ModToggleButton", "View durumu: visibility=$visibility, alpha=$alpha, width=$width, height=$height")
-        android.util.Log.d("ModToggleButton", "View durumu: isClickable=$isClickable, isFocusable=$isFocusable, isFocusableInTouchMode=$isFocusableInTouchMode")
-        android.util.Log.d("ModToggleButton", "View durumu: isAttachedToWindow=$isAttachedToWindow, parent=$parent")
+        // ACTION_CANCEL için log spam'ini azalt
+        if (event.action != MotionEvent.ACTION_CANCEL) {
+            android.util.Log.d("ModToggleButton", "🔵🔵🔵 onTouchEvent çağrıldı! action=${event.action}, rawX=${event.rawX}, rawY=${event.rawY}")
+            android.util.Log.d("ModToggleButton", "View durumu: visibility=$visibility, alpha=$alpha, width=$width, height=$height")
+            android.util.Log.d("ModToggleButton", "View durumu: isClickable=$isClickable, isFocusable=$isFocusable, isFocusableInTouchMode=$isFocusableInTouchMode")
+            android.util.Log.d("ModToggleButton", "View durumu: isAttachedToWindow=$isAttachedToWindow, parent=$parent")
+        }
+        
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
                 android.util.Log.d("ModToggleButton", "ACTION_DOWN - Touch başladı!")
@@ -149,23 +180,47 @@ class ModToggleButton(context: Context) : TextView(context) {
                 // Tıklama kontrolü
                 val deltaX = Math.abs(event.rawX - initialTouchX)
                 val deltaY = Math.abs(event.rawY - initialTouchY)
-                if (deltaX < 20 && deltaY < 20) {
-                    // Sadece tıklama, sürükleme değil
-                    android.util.Log.d("ModToggleButton", "Tıklama algılandı! Callback çağrılıyor...")
-                    // Overlay view'ler için performClick() çalışmayabilir, direkt callback kullan
-                    try {
-                        // Önce performClick'i dene (eğer listener varsa)
-                        if (hasOnClickListeners()) {
-                            performClick()
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.w("ModToggleButton", "performClick hatası (normal olabilir): ${e.message}")
-                    }
+                android.util.Log.d("ModToggleButton", "ACTION_UP - deltaX=$deltaX, deltaY=$deltaY")
+                
+                if (deltaX < 30 && deltaY < 30) {
+                    // Sadece tıklama, sürükleme değil (threshold 30px-ə artırıldı)
+                    android.util.Log.d("ModToggleButton", "✅✅✅ Tıklama algılandı! Callback çağrılıyor...")
+                    android.util.Log.d("ModToggleButton", "onClickCallback null mu? ${onClickCallback == null}")
+                    
                     // Her durumda callback'i çağır (daha güvenilir)
-                    onClickCallback?.invoke()
+                    if (onClickCallback != null) {
+                        android.util.Log.d("ModToggleButton", "Callback çağrılıyor...")
+                        try {
+                            onClickCallback!!.invoke()
+                            android.util.Log.d("ModToggleButton", "✅ Callback çağrıldı!")
+                        } catch (e: Exception) {
+                            DebugLogger.logException("ModToggleButton", "Callback çağrılırken hata", e)
+                            android.util.Log.e("ModToggleButton", "❌ Callback çağrılırken hata", e)
+                        }
+                    } else {
+                        android.util.Log.e("ModToggleButton", "❌❌❌ onClickCallback NULL!")
+                        DebugLogger.logError("ModToggleButton", "onClickCallback NULL - Toggle button callback atanmamış")
+                    }
+                    
+                    // performClick'i çağırma - yalnız callback istifadə et
+                    // Çünki setOnClickListener silindi, iki dəfə toggle olmasın
                 } else {
                     android.util.Log.d("ModToggleButton", "Sürükleme algılandı (deltaX=$deltaX, deltaY=$deltaY), tıklama değil")
                 }
+                // Touch state'i temizle
+                initialTouchX = 0f
+                initialTouchY = 0f
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                // ACTION_CANCEL geldiğinde touch state'i temizle
+                // Bu genellikle sistem tarafından touch event'in iptal edildiğini gösterir
+                // (örneğin, başka bir view focus aldığında veya sistem müdahale ettiğinde)
+                android.util.Log.d("ModToggleButton", "ACTION_CANCEL - Touch iptal edildi, state temizleniyor")
+                initialTouchX = 0f
+                initialTouchY = 0f
+                initialX = 0f
+                initialY = 0f
                 return true
             }
         }

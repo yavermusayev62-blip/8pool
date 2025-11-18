@@ -17,9 +17,14 @@ import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.toColorInt
+import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-class ModMenuService : Service() {
+class ModMenuService : LifecycleService() {
 
     private var modMenuView: ModMenuView? = null
     private var toggleButton: ModToggleButton? = null
@@ -30,6 +35,7 @@ class ModMenuService : Service() {
     
     private var isTrajectoryEnabled = false
     private var isAutoAimEnabled = false
+    private var isScreenCaptureRunning = false
     private var currentBalls: List<BallDetector.Ball> = emptyList()
     private var currentTrajectories: List<PhysicsCalculator.BallTrajectory> = emptyList()
     private var currentHoles: List<HoleDetector.Hole> = emptyList()
@@ -43,24 +49,49 @@ class ModMenuService : Service() {
     private val screenshotReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             try {
-                if (intent?.action == ScreenCaptureService.ACTION_SCREENSHOT_READY) {
-                    val byteArray = intent.getByteArrayExtra("bitmap_data")
-                    val width = intent.getIntExtra("width", 0)
-                    val height = intent.getIntExtra("height", 0)
-                    
-                    if (byteArray != null && byteArray.isNotEmpty() && width > 0 && height > 0) {
-                        val bitmap = BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
-                        if (bitmap != null && !bitmap.isRecycled) {
-                            onScreenshotReceived(bitmap)
+                when (intent?.action) {
+                    ScreenCaptureService.ACTION_SCREENSHOT_READY -> {
+                        val byteArray = intent.getByteArrayExtra("bitmap_data")
+                        val width = intent.getIntExtra("width", 0)
+                        val height = intent.getIntExtra("height", 0)
+                        
+                        if (byteArray != null && byteArray.isNotEmpty() && width > 0 && height > 0) {
+                            val bitmap = BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
+                            if (bitmap != null && !bitmap.isRecycled) {
+                                onScreenshotReceived(bitmap)
+                            } else {
+                                Log.w("ModMenuService", "Bitmap decode edilemedi veya zaten recycle edilmiş")
+                            }
                         } else {
-                            Log.w("ModMenuService", "Bitmap decode edilemedi veya zaten recycle edilmiş")
+                            Log.w("ModMenuService", "Geçersiz bitmap verisi: byteArray=${byteArray != null}, width=$width, height=$height")
                         }
-                    } else {
-                        Log.w("ModMenuService", "Geçersiz bitmap verisi: byteArray=${byteArray != null}, width=$width, height=$height")
+                    }
+                    ACTION_SCREEN_CAPTURE_DENIED -> {
+                        val oldValue = isScreenCaptureRunning
+                        Log.d("ModMenuService", "⚠️ Screen capture permission denied - switch'leri kapatılıyor (isScreenCaptureRunning: $oldValue -> false)")
+                        DebugLogger.logInfo("ModMenuService", "Screen capture permission denied - mod'lar kapatılıyor")
+                        // İzin verilmediğinde switch'leri kapat
+                        handler.post {
+                            isScreenCaptureRunning = false
+                            disableModsRequiringScreenCapture()
+                        }
+                    }
+                    ScreenCaptureService.ACTION_CAPTURE_STATE_CHANGED -> {
+                        val isRunning = intent.getBooleanExtra("is_running", false)
+                        val oldValue = isScreenCaptureRunning
+                        isScreenCaptureRunning = isRunning
+                        Log.d("ModMenuService", "✅ Screen capture state güncellendi: isRunning=$isRunning (önceki değer: $oldValue)")
+                        DebugLogger.logInfo("ModMenuService", "Screen capture state değişti: $oldValue -> $isRunning")
+                        
+                        // Eğer servis beklenmedik şekilde durduysa logla
+                        if (oldValue && !isRunning && (isTrajectoryEnabled || isAutoAimEnabled)) {
+                            Log.w("ModMenuService", "⚠️ UYARI: Screen capture servisi beklenmedik şekilde durdu! (trajectory=$isTrajectoryEnabled, autoAim=$isAutoAimEnabled)")
+                            DebugLogger.logWarning("ModMenuService", "Screen capture servisi beklenmedik şekilde durdu - trajectory veya auto aim aktifken")
+                        }
                     }
                 }
             } catch (e: Exception) {
-                Log.e("ModMenuService", "Screenshot receiver hatası: ${e.message}", e)
+                Log.e("ModMenuService", "Broadcast receiver hatası: ${e.message}", e)
             }
         }
     }
@@ -78,9 +109,23 @@ class ModMenuService : Service() {
         startForeground(1, createNotification())
         
         // Broadcast receiver kaydet
-        val filter = IntentFilter(ScreenCaptureService.ACTION_SCREENSHOT_READY)
+        val filter = IntentFilter().apply {
+            addAction(ScreenCaptureService.ACTION_SCREENSHOT_READY)
+            addAction(ACTION_SCREEN_CAPTURE_DENIED)
+            addAction(ScreenCaptureService.ACTION_CAPTURE_STATE_CHANGED)
+        }
         @Suppress("DEPRECATION")
         LocalBroadcastManager.getInstance(this).registerReceiver(screenshotReceiver, filter)
+        
+        // Global broadcast receiver (ACTION_SCREEN_CAPTURE_DENIED için)
+        val globalFilter = IntentFilter(ACTION_SCREEN_CAPTURE_DENIED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+ (API 33+) için RECEIVER_NOT_EXPORTED flag'i gerekli
+            // Bu sadece uygulama içi broadcast olduğu için NOT_EXPORTED kullanıyoruz
+            registerReceiver(screenshotReceiver, globalFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(screenshotReceiver, globalFilter)
+        }
         
         // Anti-cheat bypass aktif
         AntiCheatBypass.protectMemory()
@@ -94,13 +139,21 @@ class ModMenuService : Service() {
                 gamePackage = intent.getStringExtra("game_package")
                 Log.d("ModMenuService", "ACTION_START alındı, gamePackage: $gamePackage")
                 
-                // Overlay izni kontrolü
+                // Overlay izni kontrolü - AppOps ile birlikte
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    val hasPermission = android.provider.Settings.canDrawOverlays(this)
-                    Log.d("ModMenuService", "Overlay izni: $hasPermission")
+                    val hasPermission = AppOpsHelper.checkAndStartOverlayPermission(this)
+                    DebugLogger.logOverlayPermissionStatus("ModMenuService", hasPermission, "ACTION_START")
+                    Log.d("ModMenuService", "Overlay izni (AppOps ile): $hasPermission")
+                    
+                    // Detaylı durum logla
+                    val detailedStatus = AppOpsHelper.getDetailedOverlayPermissionStatus(this)
+                    DebugLogger.logDebug("ModMenuService", detailedStatus)
+                    
                     if (!hasPermission) {
                         Log.e("ModMenuService", "Overlay izni yok! Mod menu gösterilemez.")
-                        android.widget.Toast.makeText(this, "Overlay izni gerekli!", android.widget.Toast.LENGTH_LONG).show()
+                        DebugLogger.logAppOpsError("ModMenuService", "Overlay izni yok - Mod menu gösterilemez", 
+                            android.os.Process.myUid(), packageName)
+                        android.widget.Toast.makeText(this, "Overlay izni gerekli! Ayarlardan izin verin.", android.widget.Toast.LENGTH_LONG).show()
                         return START_STICKY // Service'i çalışır durumda tut
                     }
                 }
@@ -138,10 +191,49 @@ class ModMenuService : Service() {
                 startScreenCapture(resultCode, resultData)
             }
             ACTION_TOGGLE_TRAJECTORY -> {
-                toggleTrajectory()
+                // UI işləri main thread-də olmalıdır
+                handler.post {
+                    try {
+                        toggleTrajectory()
+                    } catch (e: Exception) {
+                        Log.e("ModMenuService", "toggleTrajectory hatası: ${e.message}", e)
+                    }
+                }
             }
             ACTION_TOGGLE_AUTO_AIM -> {
-                toggleAutoAim()
+                // UI işləri main thread-də olmalıdır
+                handler.post {
+                    try {
+                        toggleAutoAim()
+                    } catch (e: Exception) {
+                        Log.e("ModMenuService", "toggleAutoAim hatası: ${e.message}", e)
+                    }
+                }
+            }
+            ACTION_REQUEST_SCREEN_CAPTURE_PERMISSION -> {
+                // Mod menu'dan ekran yakalama izni isteği
+                Log.d("ModMenuService", "ACTION_REQUEST_SCREEN_CAPTURE_PERMISSION alındı - mod menu'dan")
+                handler.post {
+                    try {
+                        requestScreenCapturePermission()
+                    } catch (e: Exception) {
+                        Log.e("ModMenuService", "requestScreenCapturePermission hatası: ${e.message}", e)
+                        DebugLogger.logException("ModMenuService", "requestScreenCapturePermission hatası", e)
+                    }
+                }
+            }
+            ACTION_HOLE_SETTINGS_CHANGED -> {
+                // Delik pozisyon ayarları değişti - overlay'i yenile
+                Log.d("ModMenuService", "ACTION_HOLE_SETTINGS_CHANGED alındı - overlay yenileniyor")
+                handler.post {
+                    try {
+                        // Mevcut delik pozisyonlarını yeniden hesapla ve overlay'i güncelle
+                        refreshOverlay()
+                    } catch (e: Exception) {
+                        Log.e("ModMenuService", "refreshOverlay hatası: ${e.message}", e)
+                        DebugLogger.logException("ModMenuService", "refreshOverlay hatası", e)
+                    }
+                }
             }
             null -> {
                 Log.d("ModMenuService", "Intent action null - service yeniden başlatılıyor olabilir")
@@ -160,30 +252,33 @@ class ModMenuService : Service() {
         return START_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onBind(intent: Intent): IBinder? {
+        return null
+    }
 
     /**
      * Küçük toggle butonunu göster
      */
     private fun showToggleButton() {
-        // Overlay izni kontrolü
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!android.provider.Settings.canDrawOverlays(this)) {
-                Log.e("ModMenuService", "Overlay izni yok - toggle button gösterilemiyor!")
-                return
-            }
-        }
+                // Overlay izni kontrolü - AppOps ile birlikte
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    val hasPermission = AppOpsHelper.checkAndStartOverlayPermission(this)
+                    DebugLogger.logOverlayPermissionStatus("ModMenuService", hasPermission, "showToggleButton()")
+                    if (!hasPermission) {
+                        DebugLogger.logAppOpsError("ModMenuService", "Overlay izni yok - Toggle button gösterilemiyor", 
+                            android.os.Process.myUid(), packageName)
+                        Log.e("ModMenuService", "Overlay izni yok - toggle button gösterilemiyor!")
+                        return
+                    }
+                }
         
         if (toggleButton != null) return
 
         // Oyun kontrolünü kaldırdık - her zaman göster
         toggleButton = ModToggleButton(this)
-        toggleButton?.setOnClickListener {
-            android.util.Log.d("ModMenuService", "Toggle button onClick tıklandı!")
-            toggleMenu()
-        }
         
         // Direkt callback - onTouchEvent'ten çağrılacak
+        // setOnClickListener-i silmək lazımdır, çünki iki dəfə toggle olur
         toggleButton?.onClickCallback = {
             android.util.Log.d("ModMenuService", "Toggle button callback çağrıldı!")
             toggleMenu()
@@ -198,25 +293,37 @@ class ModMenuService : Service() {
                 try {
                     windowManager?.updateViewLayout(toggleButton, params)
                     android.util.Log.d("ModMenuService", "Toggle button pozisyonu güncellendi")
+                    
+                    // Mod menu açıqsa, onun pozisiyasını da yenilə
+                    if (modMenuView != null && modMenuView!!.isAttachedToWindow && menuLayoutParams != null) {
+                        updateModMenuPosition(x, y)
+                    }
                 } catch (e: Exception) {
                     android.util.Log.e("ModMenuService", "Toggle button pozisyonu güncellenemedi", e)
                 }
             }
         }
 
+        val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+        
         toggleButtonLayoutParams = WindowManager.LayoutParams(
             80,
             80,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
-            },
-            // Overlay'ler için touch event'lerin çalışması için doğru flag kombinasyonu
+            windowType,
+            // Overlay'ler için touch event'lerin çalışması üçün flag-lər
             // FLAG_NOT_TOUCH_MODAL: Butonun dışındaki dokunmalar oyuna geçer, butonun kendisi dokunmaları alır
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            // FLAG_NOT_FOCUSABLE: Focus almasın, amma touch event-ləri alır
+            // FLAG_WATCH_OUTSIDE_TOUCH: Xaricdəki touch-ları izlə (touch event-lərin işləməsi üçün)
+            // FLAG_LAYOUT_IN_SCREEN: Ekranda düzgün konumlanma
+            // FLAG_LAYOUT_NO_LIMITS: Ekran sınırları dışına çıkabilme
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.OPAQUE
@@ -226,6 +333,9 @@ class ModMenuService : Service() {
             gravity = android.view.Gravity.START or android.view.Gravity.TOP
             alpha = 1.0f
         }
+        
+        // Callback-in null olmadığını yoxla
+        android.util.Log.d("ModMenuService", "Toggle button callback set edildi: ${toggleButton?.onClickCallback != null}")
 
         try {
             android.util.Log.d("ModMenuService", "=== TOGGLE BUTTON EKLENİYOR ===")
@@ -241,9 +351,22 @@ class ModMenuService : Service() {
             android.util.Log.d("ModMenuService", "Toggle button visibility: ${toggleButton?.visibility}")
             android.util.Log.d("ModMenuService", "Toggle button alpha: ${toggleButton?.alpha}")
             
-            windowManager?.addView(toggleButton, toggleButtonLayoutParams)
-            
-            android.util.Log.d("ModMenuService", "✅ Toggle button WindowManager'a eklendi")
+            try {
+                windowManager?.addView(toggleButton, toggleButtonLayoutParams)
+                DebugLogger.logWindowManagerOperation("ModMenuService", "addView(toggleButton)", true, 
+                    "Toggle button başarıyla eklendi")
+                android.util.Log.d("ModMenuService", "✅ Toggle button WindowManager'a eklendi")
+            } catch (e: SecurityException) {
+                DebugLogger.logWindowManagerOperation("ModMenuService", "addView(toggleButton)", false, 
+                    "SecurityException: ${e.message}")
+                DebugLogger.logException("ModMenuService", "Toggle button eklenirken SecurityException", e)
+                throw e
+            } catch (e: Exception) {
+                DebugLogger.logWindowManagerOperation("ModMenuService", "addView(toggleButton)", false, 
+                    "${e.javaClass.simpleName}: ${e.message}")
+                DebugLogger.logException("ModMenuService", "Toggle button eklenirken hata", e)
+                throw e
+            }
             
             // View'ın durumunu kontrol et
             Handler(Looper.getMainLooper()).postDelayed({
@@ -281,8 +404,15 @@ class ModMenuService : Service() {
     private fun toggleMenu() {
         Log.d("ModMenuService", "=== toggleMenu() çağrıldı ===")
         
-        val isMenuVisible = modMenuView != null && modMenuView!!.isAttachedToWindow
-        Log.d("ModMenuService", "modMenuView durumu: ${if (modMenuView == null) "null" else "mevcut (isAttached=${modMenuView?.isAttachedToWindow})"}")
+        // Menu-nun görünür olub olmadığını yoxla
+        val isMenuVisible = try {
+            modMenuView != null && modMenuView!!.isAttachedToWindow && modMenuView!!.visibility == android.view.View.VISIBLE
+        } catch (e: Exception) {
+            false
+        }
+        
+        Log.d("ModMenuService", "modMenuView durumu: ${if (modMenuView == null) "null" else "mevcut (isAttached=${modMenuView?.isAttachedToWindow}, visibility=${modMenuView?.visibility})"}")
+        Log.d("ModMenuService", "isMenuVisible: $isMenuVisible")
         
         if (isMenuVisible) {
             Log.d("ModMenuService", "Mod menu görünür - kapatılıyor...")
@@ -296,6 +426,7 @@ class ModMenuService : Service() {
                     windowManager?.removeView(modMenuView)
                 } catch (e: Exception) {
                     // View zaten yoksa hata vermez
+                    Log.d("ModMenuService", "View kaldırılırken hata (normal olabilir): ${e.message}")
                 }
                 modMenuView = null
             }
@@ -309,11 +440,14 @@ class ModMenuService : Service() {
     private fun showModMenu() {
         Log.d("ModMenuService", "=== showModMenu() çağrıldı ===")
         
-        // Overlay izni kontrolü
+        // Overlay izni kontrolü - AppOps ile birlikte
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val hasPermission = android.provider.Settings.canDrawOverlays(this)
-            Log.d("ModMenuService", "Overlay izni kontrolü: $hasPermission")
+            val hasPermission = AppOpsHelper.checkAndStartOverlayPermission(this)
+            DebugLogger.logOverlayPermissionStatus("ModMenuService", hasPermission, "showModMenu()")
+            Log.d("ModMenuService", "Overlay izni kontrolü (AppOps ile): $hasPermission")
             if (!hasPermission) {
+                DebugLogger.logAppOpsError("ModMenuService", "Overlay izni yok - Mod menu gösterilemiyor", 
+                    android.os.Process.myUid(), packageName)
                 Log.e("ModMenuService", "❌ Overlay izni yok!")
                 android.widget.Toast.makeText(this, "Overlay izni gerekli! Ayarlardan izin verin.", android.widget.Toast.LENGTH_LONG).show()
                 return
@@ -322,9 +456,16 @@ class ModMenuService : Service() {
         }
         
         // View var ve eklenmişse, zaten gösteriliyor demektir
-        if (modMenuView != null && modMenuView!!.isAttachedToWindow) {
-            Log.d("ModMenuService", "Mod menu zaten gösteriliyor ve ekli")
-            toggleButton?.setMenuOpen(true)
+        val isAlreadyVisible = try {
+            modMenuView != null && modMenuView!!.isAttachedToWindow && modMenuView!!.visibility == android.view.View.VISIBLE
+        } catch (e: Exception) {
+            false
+        }
+        
+        if (isAlreadyVisible) {
+            Log.d("ModMenuService", "Mod menu zaten gösteriliyor ve ekli - toggleMenu çağrılmalı")
+            // Əgər menu artıq açıqdırsa, bağla
+            hideModMenu()
             return
         }
         
@@ -348,19 +489,20 @@ class ModMenuService : Service() {
 
         try {
             Log.d("ModMenuService", "=== MOD MENU GÖSTERME BAŞLIYOR ===")
+            DebugLogger.logDebug("ModMenuService", "=== MOD MENU GÖSTERME BAŞLIYOR ===")
             // Test view'ı kaldırdık - direkt gerçek menu'yu göster (performans için)
             showRealModMenu()
         } catch (e: SecurityException) {
+            DebugLogger.logException("ModMenuService", "SecurityException - Overlay izni gerekli", e)
             Log.e("ModMenuService", "❌ SecurityException!", e)
-            e.printStackTrace()
             android.widget.Toast.makeText(this, "SecurityException: Overlay izni gerekli! ${e.message}", android.widget.Toast.LENGTH_LONG).show()
         } catch (e: IllegalArgumentException) {
+            DebugLogger.logException("ModMenuService", "IllegalArgumentException - WindowManager parametreleri hatalı", e)
             Log.e("ModMenuService", "❌ IllegalArgumentException!", e)
-            e.printStackTrace()
             android.widget.Toast.makeText(this, "IllegalArgumentException: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
+            DebugLogger.logException("ModMenuService", "Genel hata - Mod menu gösterilemedi", e)
             Log.e("ModMenuService", "❌ Genel hata!", e)
-            e.printStackTrace()
             android.widget.Toast.makeText(this, "Hata: ${e.javaClass.simpleName} - ${e.message}", android.widget.Toast.LENGTH_LONG).show()
         }
     }
@@ -386,16 +528,32 @@ class ModMenuService : Service() {
                         // Eğer menuLayoutParams yoksa, yeni oluştur
                         if (menuLayoutParams == null) {
                             val screenWidth = resources.displayMetrics.widthPixels
-                            val menuWidth = (screenWidth * 0.8).toInt().coerceAtMost(500).coerceAtLeast(350)
+                            val screenHeight = resources.displayMetrics.heightPixels
+                            // Yığcam menu - kiçik düzbucaqlı qutu (delik pozisyon kontrolleri için genişletildi)
+                            val menuWidth = 280
+                            val menuHeight = 380
                             val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                             } else {
                                 @Suppress("DEPRECATION")
                                 WindowManager.LayoutParams.TYPE_PHONE
                             }
+                            
+                            // Toggle button-un pozisiyasını al
+                            val toggleX = toggleButtonLayoutParams?.x ?: 20
+                            val toggleY = toggleButtonLayoutParams?.y ?: 100
+                            
+                            // Menu-nu toggle button-un sağında yerləşdir
+                            val menuX = toggleX + 100
+                            val menuY = toggleY
+                            
+                            // Ekran sərhədlərini yoxla
+                            val finalX = menuX.coerceIn(0, screenWidth - menuWidth)
+                            val finalY = menuY.coerceIn(0, screenHeight - menuHeight)
+                            
                             menuLayoutParams = WindowManager.LayoutParams(
                                 menuWidth,
-                                WindowManager.LayoutParams.WRAP_CONTENT,
+                                menuHeight,
                                 windowType,
                                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -403,11 +561,16 @@ class ModMenuService : Service() {
                                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                                 PixelFormat.OPAQUE
                             ).apply {
-                                x = (screenWidth - menuWidth) / 2
-                                y = 100
+                                x = finalX
+                                y = finalY
                                 gravity = android.view.Gravity.START or android.view.Gravity.TOP
                                 alpha = 1.0f
                             }
+                        } else {
+                            // Mövcud params varsa, pozisiyasını yenilə
+                            val toggleX = toggleButtonLayoutParams?.x ?: 20
+                            val toggleY = toggleButtonLayoutParams?.y ?: 100
+                            updateModMenuPosition(toggleX, toggleY)
                         }
                         existingView.visibility = android.view.View.VISIBLE
                         existingView.alpha = 1.0f
@@ -450,13 +613,18 @@ class ModMenuService : Service() {
             modMenuView = ModMenuView(this)
             Log.d("ModMenuService", "✅ ModMenuView oluşturuldu: $modMenuView")
             
+            // Switch butonlarının state-ini yenilə - config-dən yüklə
+            modMenuView?.updateSwitchStates()
+            
             modMenuView?.setOnCloseListener {
                 Log.d("ModMenuService", "Mod menu kapatılıyor (close listener)")
                 hideModMenu()
             }
 
             val screenWidth = resources.displayMetrics.widthPixels
-            val menuWidth = (screenWidth * 0.8).toInt().coerceAtMost(500).coerceAtLeast(350)
+            val screenHeight = resources.displayMetrics.heightPixels
+            // Yığcam menu - kiçik düzbucaqlı qutu
+            val menuWidth = 280
             
             Log.d("ModMenuService", "Ekran genişliği: $screenWidth, Menu genişliği: $menuWidth")
             
@@ -472,6 +640,18 @@ class ModMenuService : Service() {
             
             Log.d("ModMenuService", "Mod menu visibility: ${modMenuView?.visibility}, alpha: ${modMenuView?.alpha}")
             
+            // Toggle button-un pozisiyasını al
+            val toggleX = toggleButtonLayoutParams?.x ?: 20
+            val toggleY = toggleButtonLayoutParams?.y ?: 100
+            
+            // Menu-nu toggle button-un sağında yerləşdir
+            val menuX = toggleX + 100 // Toggle button-dan 100px sağda
+            val menuY = toggleY
+            
+            // Ekran sərhədlərini yoxla
+            val finalX = menuX.coerceIn(0, screenWidth - menuWidth)
+            val finalY = menuY.coerceIn(0, screenHeight - 200) // Yığcam menu - 200px yüksəklik
+            
             menuLayoutParams = WindowManager.LayoutParams(
                 menuWidth,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -483,11 +663,13 @@ class ModMenuService : Service() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.OPAQUE
             ).apply {
-                x = (screenWidth - menuWidth) / 2
-                y = 100
+                x = finalX
+                y = finalY
                 gravity = android.view.Gravity.START or android.view.Gravity.TOP
                 alpha = 1.0f
             }
+            
+            Log.d("ModMenuService", "Menu pozisiyası: toggleX=$toggleX, toggleY=$toggleY, menuX=$finalX, menuY=$finalY")
             
             Log.d("ModMenuService", "Menu layout params: width=$menuWidth, x=${menuLayoutParams?.x}, y=${menuLayoutParams?.y}")
 
@@ -512,8 +694,22 @@ class ModMenuService : Service() {
             Log.d("ModMenuService", "Flags: ${menuLayoutParams?.flags}")
             
             // View'ı ekle
-            windowManager?.addView(modMenuView, menuLayoutParams)
-            Log.d("ModMenuService", "✅✅✅ GERÇEK MOD MENU EKLENDİ!")
+            try {
+                windowManager?.addView(modMenuView, menuLayoutParams)
+                DebugLogger.logWindowManagerOperation("ModMenuService", "addView(modMenuView)", true, 
+                    "Mod menu başarıyla eklendi - Size: ${menuLayoutParams?.width}x${menuLayoutParams?.height}, Position: (${menuLayoutParams?.x}, ${menuLayoutParams?.y})")
+                Log.d("ModMenuService", "✅✅✅ GERÇEK MOD MENU EKLENDİ!")
+            } catch (e: SecurityException) {
+                DebugLogger.logWindowManagerOperation("ModMenuService", "addView(modMenuView)", false, 
+                    "SecurityException: ${e.message}")
+                DebugLogger.logException("ModMenuService", "Mod menu eklenirken SecurityException", e)
+                throw e
+            } catch (e: Exception) {
+                DebugLogger.logWindowManagerOperation("ModMenuService", "addView(modMenuView)", false, 
+                    "${e.javaClass.simpleName}: ${e.message}")
+                DebugLogger.logException("ModMenuService", "Mod menu eklenirken hata", e)
+                throw e
+            }
             
             // View'ın eklenip eklenmediğini kontrol et (hemen ve biraz sonra)
             handler.post {
@@ -644,17 +840,67 @@ class ModMenuService : Service() {
     }
 
     /**
+     * Mod menu pozisiyasını toggle button-un pozisiyasına görə yenilə
+     */
+    private fun updateModMenuPosition(toggleX: Int, toggleY: Int) {
+        menuLayoutParams?.let { params ->
+            val screenWidth = resources.displayMetrics.widthPixels
+            val screenHeight = resources.displayMetrics.heightPixels
+            val menuWidth = params.width
+            val menuHeight = modMenuView?.measuredHeight ?: 300
+            
+            // Toggle button-un sağında yerləşdir
+            val menuX = toggleX + 100 // Toggle button-dan 100px sağda
+            val menuY = toggleY
+            
+            // Ekran sərhədlərini yoxla
+            val finalX = menuX.coerceIn(0, screenWidth - menuWidth)
+            val finalY = menuY.coerceIn(0, screenHeight - menuHeight)
+            
+            params.x = finalX
+            params.y = finalY
+            
+            try {
+                windowManager?.updateViewLayout(modMenuView, params)
+                android.util.Log.d("ModMenuService", "Mod menu pozisiyası yeniləndi: x=$finalX, y=$finalY")
+            } catch (e: Exception) {
+                android.util.Log.e("ModMenuService", "Mod menu pozisiyası yenilənə bilmədi", e)
+            }
+        }
+    }
+
+    /**
      * Mod menüsünü gizle (minimize)
      */
     private fun hideModMenu() {
-        modMenuView?.let {
-            try {
-                windowManager?.removeView(it)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-            modMenuView = null
+        Log.d("ModMenuService", "=== hideModMenu() çağrıldı ===")
+        
+        if (modMenuView == null) {
+            Log.d("ModMenuService", "Mod menu view null - zaten kapalı")
             toggleButton?.setMenuOpen(false)
+            return
+        }
+        
+        try {
+            // View-ın ekli olub olmadığını yoxla
+            val isAttached = modMenuView!!.isAttachedToWindow
+            Log.d("ModMenuService", "Mod menu isAttachedToWindow: $isAttached")
+            
+            if (isAttached) {
+                windowManager?.removeView(modMenuView)
+                Log.d("ModMenuService", "✅ Mod menu view kaldırıldı")
+            } else {
+                Log.d("ModMenuService", "Mod menu view zaten eklenmemiş")
+            }
+        } catch (e: Exception) {
+            Log.e("ModMenuService", "Mod menu kaldırılırken hata", e)
+            e.printStackTrace()
+        } finally {
+            // Hər halda null et
+            modMenuView = null
+            menuLayoutParams = null
+            toggleButton?.setMenuOpen(false)
+            Log.d("ModMenuService", "✅ Mod menu bağlandı, toggle button güncellendi")
         }
     }
 
@@ -674,18 +920,32 @@ class ModMenuService : Service() {
 
 
     private fun toggleTrajectory() {
-        // Önce mevcut durumu oku, sonra toggle et
+        // Config-dən state-i oxu - Switch butonu artıq state-i dəyişib
         val currentState = modConfig.isModEnabled(ModMenuConfig.MOD_BALL_TRAJECTORY)
-        isTrajectoryEnabled = !currentState
+        isTrajectoryEnabled = currentState
         
-        // Yeni durumu kaydet
-        modConfig.setModEnabled(ModMenuConfig.MOD_BALL_TRAJECTORY, isTrajectoryEnabled)
+        Log.d("ModMenuService", "toggleTrajectory: currentState=$currentState, isTrajectoryEnabled=$isTrajectoryEnabled")
+        
+        // Switch butonlarının state-ini yenilə - UI sinxronizasiyası üçün
+        if (modMenuView != null) {
+            Log.d("ModMenuService", "✅ modMenuView mövcuddur - updateSwitchStates() çağrılır")
+            modMenuView?.updateSwitchStates()
+        } else {
+            Log.w("ModMenuService", "⚠️ modMenuView null - updateSwitchStates() çağrıla bilməz")
+        }
         
         if (isTrajectoryEnabled) {
             // OverlayDrawView'ı ekle (eğer yoksa)
             showOverlayDrawView()
-            // Ekran yakalama izni iste
-            requestScreenCapturePermission()
+            // Ekran yakalama servisi çalışıyorsa yeni izin isteme
+            Log.d("ModMenuService", "🔍 toggleTrajectory - isScreenCaptureRunning kontrolü: isScreenCaptureRunning=$isScreenCaptureRunning")
+            if (!isScreenCaptureRunning) {
+                Log.d("ModMenuService", "⚠️ Screen capture servisi çalışmıyor - izin isteniyor (isScreenCaptureRunning=$isScreenCaptureRunning)")
+                DebugLogger.logInfo("ModMenuService", "Trajectory açılırken screen capture servisi çalışmıyor - izin isteniyor")
+                requestScreenCapturePermission()
+            } else {
+                Log.d("ModMenuService", "✅ Screen capture servisi zaten çalışıyor - yeni izin istenmiyor (isScreenCaptureRunning=$isScreenCaptureRunning)")
+            }
         } else {
             stopScreenCapture()
             overlayDrawView?.clear()
@@ -701,20 +961,85 @@ class ModMenuService : Service() {
     private fun requestScreenCapturePermission() {
         // MediaProjection izni MainActivity'den alınacak
         // Burada sadece intent gönder
+        // MainActivity'yi oyunun üzerine getirmemek için FLAG_ACTIVITY_NO_ANIMATION ve 
+        // FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS kullanıyoruz
         val intent = Intent(this, MainActivity::class.java).apply {
             action = MainActivity.ACTION_REQUEST_SCREEN_CAPTURE
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or 
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or 
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
         }
         startActivity(intent)
     }
+    
+    /**
+     * Ekran yakalama gerektiren mod'ları kapat (izin verilmediğinde)
+     */
+    private fun disableModsRequiringScreenCapture() {
+        Log.d("ModMenuService", "=== disableModsRequiringScreenCapture() çağrıldı ===")
+        
+        var needUpdate = false
+        
+        // Trajectory açıksa kapat
+        if (isTrajectoryEnabled || modConfig.isModEnabled(ModMenuConfig.MOD_BALL_TRAJECTORY)) {
+            Log.d("ModMenuService", "⚠️ Trajectory açık - kapatılıyor")
+            modConfig.setModEnabled(ModMenuConfig.MOD_BALL_TRAJECTORY, false)
+            isTrajectoryEnabled = false
+            needUpdate = true
+            stopScreenCapture()
+            overlayDrawView?.clear()
+            currentTrajectories = emptyList()
+        }
+        
+        // Auto aim açıksa kapat (sadece trajectory kapalıysa)
+        if ((isAutoAimEnabled || modConfig.isModEnabled(ModMenuConfig.MOD_AUTO_AIM)) && !isTrajectoryEnabled) {
+            Log.d("ModMenuService", "⚠️ Auto Aim açık ve trajectory kapalı - kapatılıyor")
+            modConfig.setModEnabled(ModMenuConfig.MOD_AUTO_AIM, false)
+            isAutoAimEnabled = false
+            needUpdate = true
+            currentAutoAimTarget = null
+            if (!isTrajectoryEnabled) {
+                hideOverlayDrawView()
+            }
+        }
+        
+        // UI'yi güncelle
+        if (needUpdate && modMenuView != null) {
+            Log.d("ModMenuService", "✅ Switch state'leri güncelleniyor")
+            modMenuView?.updateSwitchStates()
+        }
+        
+        // Overlay'i güncelle
+        overlayDrawView?.updateTrajectories(
+            currentTrajectories,
+            currentBalls,
+            tableBounds,
+            currentHoles,
+            currentAutoAimTarget,
+            isAutoAimEnabled
+        )
+        
+        Log.d("ModMenuService", "✅ Mod'lar kapatıldı - isTrajectoryEnabled=$isTrajectoryEnabled, isAutoAimEnabled=$isAutoAimEnabled")
+    }
 
     fun startScreenCapture(resultCode: Int, resultData: Intent?) {
-        if (resultCode == -1 || resultData == null) {
-            Log.w("ModMenuService", "Screen capture başlatılamadı: resultCode=$resultCode, resultData=${resultData != null}")
+        Log.d("ModMenuService", "=== startScreenCapture() çağrıldı ===")
+        Log.d("ModMenuService", "resultCode: $resultCode, RESULT_OK: ${Activity.RESULT_OK}, resultData: ${resultData != null}")
+        
+        // RESULT_OK = -1, yəni resultCode == -1 permission verildiyini göstərir
+        if (resultCode != Activity.RESULT_OK || resultData == null) {
+            val oldValue = isScreenCaptureRunning
+            Log.w("ModMenuService", "❌ Screen capture başlatılamadı: resultCode=$resultCode (RESULT_OK=${Activity.RESULT_OK}), resultData=${resultData != null}")
+            DebugLogger.logError("ModMenuService", "Screen capture başlatılamadı: resultCode=$resultCode, resultData=${resultData != null}")
+            android.widget.Toast.makeText(this, "❌ Ekran yakalama izni verilmedi!", android.widget.Toast.LENGTH_LONG).show()
+            isScreenCaptureRunning = false
+            Log.d("ModMenuService", "startScreenCapture - isScreenCaptureRunning: $oldValue -> false (hata durumu)")
             return
         }
 
         try {
+            Log.d("ModMenuService", "✅ Screen capture permission var, ScreenCaptureService başlatılıyor...")
             val intent = Intent(this, ScreenCaptureService::class.java).apply {
                 action = ScreenCaptureService.ACTION_START
                 putExtra("result_code", resultCode)
@@ -726,9 +1051,18 @@ class ModMenuService : Service() {
             } else {
                 startService(intent)
             }
+            // isScreenCaptureRunning flag'i ACTION_CAPTURE_STATE_CHANGED broadcast'inden güncellenecek
+            // Bu şekilde ScreenCaptureService başarılı/başarısız durumunu bildirebilir
+            Log.d("ModMenuService", "✅ ScreenCaptureService başlatıldı! (flag broadcast'ten güncellenecek, şu anki değer: $isScreenCaptureRunning)")
+            DebugLogger.logInfo("ModMenuService", "ScreenCaptureService başlatma intent'i gönderildi - flag broadcast'ten güncellenecek")
+            android.widget.Toast.makeText(this, "✅ Ekran yakalama başladı!", android.widget.Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Log.e("ModMenuService", "Screen capture servisi başlatılamadı: ${e.message}", e)
-            android.widget.Toast.makeText(this, "Ekran yakalama başlatılamadı", android.widget.Toast.LENGTH_SHORT).show()
+            val oldValue = isScreenCaptureRunning
+            isScreenCaptureRunning = false
+            Log.e("ModMenuService", "❌ Screen capture servisi başlatılamadı: ${e.message}", e)
+            DebugLogger.logException("ModMenuService", "Screen capture servisi başlatılamadı", e)
+            Log.d("ModMenuService", "startScreenCapture - isScreenCaptureRunning: $oldValue -> false (exception)")
+            android.widget.Toast.makeText(this, "❌ Ekran yakalama hatası: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
         }
     }
 
@@ -744,76 +1078,101 @@ class ModMenuService : Service() {
             return
         }
 
-        handler.post {
+        // Bitmap geçerliliğini kontrol et (main thread'de hızlı kontrol)
+        if (bitmap.isRecycled) {
+            Log.w("ModMenuService", "Bitmap zaten recycle edilmiş")
+            return
+        }
+
+        // DisplayMetrics'i main thread'de al (background thread'de erişim ANR'e neden olabilir)
+        val metrics = resources.displayMetrics
+        val screenWidth = metrics.widthPixels.toFloat()
+        val screenHeight = metrics.heightPixels.toFloat()
+
+        // Ağır işlemleri background thread'de yap
+        lifecycleScope.launch(Dispatchers.Default) {
             try {
-                // Bitmap geçerliliğini kontrol et
-                if (bitmap.isRecycled) {
-                    Log.w("ModMenuService", "Bitmap zaten recycle edilmiş")
-                    return@post
-                }
-                
-                // Topları tespit et
+                // Topları tespit et (ağır işlem - background thread'de)
                 val detectedBalls = BallDetector.detectBalls(bitmap)
-                currentBalls = detectedBalls
 
-                // Masa sınırlarını bul
-                tableBounds = BallDetector.detectTableBounds(bitmap)
+                // Masa sınırlarını bul (ağır işlem - background thread'de)
+                val detectedTableBounds = BallDetector.detectTableBounds(bitmap)
 
-                // Delikleri tespit et
-                currentHoles = HoleDetector.detectHoles(bitmap, tableBounds)
+                // Delikleri tespit et (ağır işlem - background thread'de)
+                // Delik pozisyon ayarlarını config'den al
+                val holeOffsetX = modConfig.getHoleOffsetX()
+                val holeOffsetY = modConfig.getHoleOffsetY()
+                val holeScale = modConfig.getHoleScale()
+                val detectedHoles = HoleDetector.detectHoles(
+                    bitmap, 
+                    detectedTableBounds,
+                    offsetX = holeOffsetX,
+                    offsetY = holeOffsetY,
+                    scale = holeScale
+                )
 
-                // Auto Aim aktifse hedefi hesapla
+                // Auto Aim aktifse hedefi hesapla (ağır işlem - background thread'de)
+                var calculatedAutoAimTarget: AutoAimEngine.AimTarget? = null
                 if (isAutoAimEnabled) {
                     val whiteBall = detectedBalls.find { it.number == 0 }
                     val targetBalls = detectedBalls.filter { it.number > 0 }
                     
-                    if (whiteBall != null && targetBalls.isNotEmpty() && currentHoles.isNotEmpty()) {
-                        val metrics = resources.displayMetrics
-                        currentAutoAimTarget = AutoAimEngine.calculateBestAim(
+                    if (whiteBall != null && targetBalls.isNotEmpty() && detectedHoles.isNotEmpty()) {
+                        calculatedAutoAimTarget = AutoAimEngine.calculateBestAim(
                             whiteBall = whiteBall,
                             targetBalls = targetBalls,
                             allBalls = detectedBalls,
-                            holes = currentHoles,
-                            tableWidth = metrics.widthPixels.toFloat(),
-                            tableHeight = metrics.heightPixels.toFloat()
+                            holes = detectedHoles,
+                            tableWidth = screenWidth,
+                            tableHeight = screenHeight
                         )
-                    } else {
-                        currentAutoAimTarget = null
                     }
                 }
 
-                // Trajectory hesapla (top yolu gösterimi aktifse)
+                // Trajectory hesapla (ağır işlem - background thread'de)
+                var calculatedTrajectories: List<PhysicsCalculator.BallTrajectory> = emptyList()
                 if (isTrajectoryEnabled) {
                     val whiteBall = detectedBalls.find { it.number == 0 }
                     if (whiteBall != null && detectedBalls.size > 1) {
-                        val metrics = resources.displayMetrics
-                        val trajectories = PhysicsCalculator.calculateTrajectories(
+                        calculatedTrajectories = PhysicsCalculator.calculateTrajectories(
                             whiteBall = whiteBall,
-                            cueDirection = currentAutoAimTarget?.aimAngle ?: 45f,
-                            cuePower = currentAutoAimTarget?.aimPower ?: 0.8f,
+                            cueDirection = calculatedAutoAimTarget?.aimAngle ?: 45f,
+                            cuePower = calculatedAutoAimTarget?.aimPower ?: 0.8f,
                             allBalls = detectedBalls,
-                            tableWidth = metrics.widthPixels.toFloat(),
-                            tableHeight = metrics.heightPixels.toFloat()
+                            tableWidth = screenWidth,
+                            tableHeight = screenHeight
                         )
-                        currentTrajectories = trajectories
-                    } else {
-                        currentTrajectories = emptyList()
                     }
                 }
 
-                // Overlay'i güncelle
-                overlayDrawView?.updateTrajectories(
-                    currentTrajectories,
-                    currentBalls,
-                    tableBounds,
-                    currentHoles,
-                    currentAutoAimTarget,
-                    isAutoAimEnabled
-                )
+                // State'leri güncelle ve UI'ı main thread'de güncelle
+                withContext(Dispatchers.Main) {
+                    try {
+                        currentBalls = detectedBalls
+                        tableBounds = detectedTableBounds
+                        currentHoles = detectedHoles
+                        currentAutoAimTarget = calculatedAutoAimTarget
+                        currentTrajectories = calculatedTrajectories
+
+                        // Overlay'i güncelle (UI işlemi - main thread'de yapılmalı)
+                        overlayDrawView?.updateTrajectories(
+                            currentTrajectories,
+                            currentBalls,
+                            tableBounds,
+                            currentHoles,
+                            currentAutoAimTarget,
+                            isAutoAimEnabled
+                        )
+                    } catch (e: Exception) {
+                        Log.e("ModMenuService", "UI güncelleme hatası: ${e.message}", e)
+                        DebugLogger.logException("ModMenuService", "UI güncelleme hatası", e)
+                    }
+                }
             } catch (e: Exception) {
                 Log.e("ModMenuService", "Ekran işleme hatası: ${e.message}", e)
+                DebugLogger.logException("ModMenuService", "Ekran işleme hatası", e)
             } finally {
-                // Bitmap'i temizle (artık kullanılmayacak)
+                // Bitmap'i temizle (background thread'de yapılabilir)
                 try {
                     if (!bitmap.isRecycled) {
                         bitmap.recycle()
@@ -826,22 +1185,51 @@ class ModMenuService : Service() {
     }
 
     /**
+     * Overlay'i yenile - delik pozisyon ayarları değiştiğinde çağrılır
+     */
+    private fun refreshOverlay() {
+        Log.d("ModMenuService", "refreshOverlay() çağrıldı")
+        // Mevcut overlay'i güncelle - bir sonraki screenshot'ta yeni delik pozisyonları uygulanacak
+        // Şimdilik sadece overlay'i invalidate et, böylece bir sonraki screenshot ile güncellenecek
+        if (overlayDrawView != null && isScreenCaptureRunning) {
+            Log.d("ModMenuService", "Overlay invalidate ediliyor - yeni delik pozisyonları bir sonraki screenshot'ta uygulanacak")
+            overlayDrawView?.invalidate()
+        } else {
+            Log.d("ModMenuService", "Overlay görünmüyor veya screen capture çalışmıyor - overlay güncellenmiyor")
+        }
+    }
+
+    /**
      * Auto Aim'i aç/kapat
      */
     private fun toggleAutoAim() {
-        // Önce mevcut durumu oku, sonra toggle et
+        // Config-dən state-i oxu - Switch butonu artıq state-i dəyişib
         val currentState = modConfig.isModEnabled(ModMenuConfig.MOD_AUTO_AIM)
-        isAutoAimEnabled = !currentState
+        isAutoAimEnabled = currentState
         
-        // Yeni durumu kaydet
-        modConfig.setModEnabled(ModMenuConfig.MOD_AUTO_AIM, isAutoAimEnabled)
+        Log.d("ModMenuService", "toggleAutoAim: currentState=$currentState, isAutoAimEnabled=$isAutoAimEnabled")
+        
+        // Switch butonlarının state-ini yenilə - UI sinxronizasiyası üçün
+        if (modMenuView != null) {
+            Log.d("ModMenuService", "✅ modMenuView mövcuddur - updateSwitchStates() çağrılır")
+            modMenuView?.updateSwitchStates()
+        } else {
+            Log.w("ModMenuService", "⚠️ modMenuView null - updateSwitchStates() çağrıla bilməz")
+        }
         
         if (isAutoAimEnabled) {
             // OverlayDrawView'ı ekle (eğer yoksa)
             showOverlayDrawView()
             if (!isTrajectoryEnabled) {
-                // Ekran yakalama gerekli
-                requestScreenCapturePermission()
+                // Ekran yakalama gerekli - ama servis çalışıyorsa yeni izin isteme
+                Log.d("ModMenuService", "🔍 toggleAutoAim - isScreenCaptureRunning kontrolü: isScreenCaptureRunning=$isScreenCaptureRunning")
+                if (!isScreenCaptureRunning) {
+                    Log.d("ModMenuService", "⚠️ Screen capture servisi çalışmıyor - izin isteniyor (isScreenCaptureRunning=$isScreenCaptureRunning)")
+                    DebugLogger.logInfo("ModMenuService", "Auto aim açılırken screen capture servisi çalışmıyor - izin isteniyor")
+                    requestScreenCapturePermission()
+                } else {
+                    Log.d("ModMenuService", "✅ Screen capture servisi zaten çalışıyor - yeni izin istenmiyor (isScreenCaptureRunning=$isScreenCaptureRunning)")
+                }
             }
         } else {
             // Auto aim kapatıldığında hedefi temizle
@@ -879,15 +1267,23 @@ class ModMenuService : Service() {
     }
 
     private fun stopScreenCapture() {
+        val oldValue = isScreenCaptureRunning
         try {
             val intent = Intent(this, ScreenCaptureService::class.java).apply {
                 action = ScreenCaptureService.ACTION_STOP
             }
             stopService(intent)
+            // isScreenCaptureRunning flag'i ACTION_CAPTURE_STATE_CHANGED broadcast'inden güncellenecek
+            // Ancak stopService() çağrıldıktan hemen sonra false yapmak da mantıklı (zamanlama sorunu olmasın)
+            isScreenCaptureRunning = false
+            Log.d("ModMenuService", "✅ Screen capture durduruldu. isScreenCaptureRunning: $oldValue -> false")
+            DebugLogger.logInfo("ModMenuService", "Screen capture durduruldu: $oldValue -> false")
             // State'i değiştirme - sadece servisi durdur
             // State toggleTrajectory() tarafından yönetiliyor
         } catch (e: Exception) {
+            isScreenCaptureRunning = false
             Log.e("ModMenuService", "Screen capture durdurulamadı: ${e.message}", e)
+            DebugLogger.logException("ModMenuService", "Screen capture durdurulurken hata", e)
         }
     }
 
@@ -895,6 +1291,12 @@ class ModMenuService : Service() {
         super.onDestroy()
         @Suppress("DEPRECATION")
         LocalBroadcastManager.getInstance(this).unregisterReceiver(screenshotReceiver)
+        try {
+            unregisterReceiver(screenshotReceiver)
+        } catch (e: Exception) {
+            // Receiver zaten unregister edilmiş olabilir
+            Log.d("ModMenuService", "Receiver unregister hatası (normal olabilir): ${e.message}")
+        }
         hideModMenu()
         hideToggleButton()
         hideOverlayDrawView()
@@ -940,6 +1342,9 @@ class ModMenuService : Service() {
         const val ACTION_START_SCREEN_CAPTURE = "com.poolmod.menu.START_SCREEN_CAPTURE"
         const val ACTION_TOGGLE_TRAJECTORY = "com.poolmod.menu.TOGGLE_TRAJECTORY"
         const val ACTION_TOGGLE_AUTO_AIM = "com.poolmod.menu.TOGGLE_AUTO_AIM"
+        const val ACTION_SCREEN_CAPTURE_DENIED = "com.poolmod.menu.SCREEN_CAPTURE_DENIED"
+        const val ACTION_REQUEST_SCREEN_CAPTURE_PERMISSION = "com.poolmod.menu.REQUEST_SCREEN_CAPTURE_PERMISSION"
+        const val ACTION_HOLE_SETTINGS_CHANGED = "com.poolmod.menu.HOLE_SETTINGS_CHANGED"
         private const val CHANNEL_ID = "mod_menu_service_channel"
     }
 }

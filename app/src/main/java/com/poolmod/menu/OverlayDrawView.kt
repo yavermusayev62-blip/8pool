@@ -102,28 +102,28 @@ class OverlayDrawView(context: Context) : View(context) {
             canvas.drawCircle(hole.x, hole.y, hole.radius, holePaint)
             canvas.drawCircle(hole.x, hole.y, hole.radius, holeStrokePaint)
             
-            // Delik numarası
-            val holeText = hole.number.toString()
-            val textBounds = Rect()
-            textPaint.getTextBounds(holeText, 0, holeText.length, textBounds)
-            val textX = hole.x - textBounds.width() / 2f
-            val textY = hole.y + textBounds.height() / 2f
-            
-            // Arka plan
-            val holeBgPaint = Paint().apply {
-                color = Color.parseColor("#CC000000")
-                style = Paint.Style.FILL
-            }
-            canvas.drawRect(
-                textX - 5,
-                textY - textBounds.height() - 5,
-                textX + textBounds.width() + 5,
-                textY + 5,
-                holeBgPaint
-            )
-            
-            textPaint.color = Color.YELLOW
-            canvas.drawText(holeText, textX, textY, textPaint)
+            // Delik numarası - gizlendi
+            // val holeText = hole.number.toString()
+            // val textBounds = Rect()
+            // textPaint.getTextBounds(holeText, 0, holeText.length, textBounds)
+            // val textX = hole.x - textBounds.width() / 2f
+            // val textY = hole.y + textBounds.height() / 2f
+            // 
+            // // Arka plan
+            // val holeBgPaint = Paint().apply {
+            //     color = Color.parseColor("#CC000000")
+            //     style = Paint.Style.FILL
+            // }
+            // canvas.drawRect(
+            //     textX - 5,
+            //     textY - textBounds.height() - 5,
+            //     textX + textBounds.width() + 5,
+            //     textY + 5,
+            //     holeBgPaint
+            // )
+            // 
+            // textPaint.color = Color.YELLOW
+            // canvas.drawText(holeText, textX, textY, textPaint)
         }
 
         // Auto Aim hedefini çiz
@@ -181,29 +181,29 @@ class OverlayDrawView(context: Context) : View(context) {
                 
                 canvas.drawPath(aimPath, aimLinePaint)
                 
-                // Aim bilgisi
-                val aimInfo = AutoAimEngine.getAimInfo(aimTarget)
-                val infoTextBounds = Rect()
-                textPaint.getTextBounds(aimInfo, 0, aimInfo.length, infoTextBounds)
-                val infoX = whiteBall.x - infoTextBounds.width() / 2f
-                val infoY = whiteBall.y - 40f
-                
-                val infoBgPaint = Paint().apply {
-                    color = Color.parseColor("#CC000000")
-                    style = Paint.Style.FILL
-                }
-                canvas.drawRect(
-                    infoX - 10,
-                    infoY - infoTextBounds.height() - 10,
-                    infoX + infoTextBounds.width() + 10,
-                    infoY + 10,
-                    infoBgPaint
-                )
-                
-                textPaint.color = Color.YELLOW
-                textPaint.textSize = 18f
-                canvas.drawText(aimInfo, infoX, infoY, textPaint)
-                textPaint.textSize = 24f // Geri al
+                // Aim bilgisi - gizlendi
+                // val aimInfo = AutoAimEngine.getAimInfo(aimTarget)
+                // val infoTextBounds = Rect()
+                // textPaint.getTextBounds(aimInfo, 0, aimInfo.length, infoTextBounds)
+                // val infoX = whiteBall.x - infoTextBounds.width() / 2f
+                // val infoY = whiteBall.y - 40f
+                // 
+                // val infoBgPaint = Paint().apply {
+                //     color = Color.parseColor("#CC000000")
+                //     style = Paint.Style.FILL
+                // }
+                // canvas.drawRect(
+                //     infoX - 10,
+                //     infoY - infoTextBounds.height() - 10,
+                //     infoX + infoTextBounds.width() + 10,
+                //     infoY + 10,
+                //     infoBgPaint
+                // )
+                // 
+                // textPaint.color = Color.YELLOW
+                // textPaint.textSize = 18f
+                // canvas.drawText(aimInfo, infoX, infoY, textPaint)
+                // textPaint.textSize = 24f // Geri al
             }
         }
 
@@ -215,34 +215,34 @@ class OverlayDrawView(context: Context) : View(context) {
             // Top çemberi
             canvas.drawCircle(ball.x, ball.y, ball.radius, ballPaint)
             
-            // Top numarası
-            val numberText = when (ball.number) {
-                0 -> "W" // White
-                -1 -> "B" // Black
-                else -> ball.number.toString()
-            }
-            
-            // Numarayı ortala
-            val textBounds = Rect()
-            textPaint.getTextBounds(numberText, 0, numberText.length, textBounds)
-            val textX = ball.x - textBounds.width() / 2f
-            val textY = ball.y + textBounds.height() / 2f
-            
-            // Arka plan (okunabilirlik için)
-            val ballBgPaint = Paint().apply {
-                this.color = Color.parseColor("#80000000")
-                style = Paint.Style.FILL
-            }
-            canvas.drawRect(
-                textX - 5,
-                textY - textBounds.height() - 5,
-                textX + textBounds.width() + 5,
-                textY + 5,
-                ballBgPaint
-            )
-            
-            textPaint.color = if (ball.number == -1) Color.WHITE else Color.BLACK
-            canvas.drawText(numberText, textX, textY, textPaint)
+            // Top numarası - gizlendi
+            // val numberText = when (ball.number) {
+            //     0 -> "W" // White
+            //     -1 -> "B" // Black
+            //     else -> ball.number.toString()
+            // }
+            // 
+            // // Numarayı ortala
+            // val textBounds = Rect()
+            // textPaint.getTextBounds(numberText, 0, numberText.length, textBounds)
+            // val textX = ball.x - textBounds.width() / 2f
+            // val textY = ball.y + textBounds.height() / 2f
+            // 
+            // // Arka plan (okunabilirlik için)
+            // val ballBgPaint = Paint().apply {
+            //     this.color = Color.parseColor("#80000000")
+            //     style = Paint.Style.FILL
+            // }
+            // canvas.drawRect(
+            //     textX - 5,
+            //     textY - textBounds.height() - 5,
+            //     textX + textBounds.width() + 5,
+            //     textY + 5,
+            //     ballBgPaint
+            // )
+            // 
+            // textPaint.color = if (ball.number == -1) Color.WHITE else Color.BLACK
+            // canvas.drawText(numberText, textX, textY, textPaint)
         }
 
         // Top yollarını çiz
@@ -284,33 +284,33 @@ class OverlayDrawView(context: Context) : View(context) {
                 paint
             )
             
-            // Top numarasını bitiş noktasına yaz
-            val numberText = when (trajectory.ballNumber) {
-                0 -> "W"
-                -1 -> "B"
-                else -> trajectory.ballNumber.toString()
-            }
-            
-            val textBounds = Rect()
-            textPaint.getTextBounds(numberText, 0, numberText.length, textBounds)
-            val textX = trajectory.finalPosition.x - textBounds.width() / 2f
-            val textY = trajectory.finalPosition.y - 20f
-            
-            // Arka plan
-            val trajectoryBgPaint = Paint().apply {
-                this.color = Color.parseColor("#CC000000")
-                style = Paint.Style.FILL
-            }
-            canvas.drawRect(
-                textX - 8,
-                textY - textBounds.height() - 8,
-                textX + textBounds.width() + 8,
-                textY + 8,
-                trajectoryBgPaint
-            )
-            
-            textPaint.color = color
-            canvas.drawText(numberText, textX, textY, textPaint)
+            // Top numarasını bitiş noktasına yaz - gizlendi
+            // val numberText = when (trajectory.ballNumber) {
+            //     0 -> "W"
+            //     -1 -> "B"
+            //     else -> trajectory.ballNumber.toString()
+            // }
+            // 
+            // val textBounds = Rect()
+            // textPaint.getTextBounds(numberText, 0, numberText.length, textBounds)
+            // val textX = trajectory.finalPosition.x - textBounds.width() / 2f
+            // val textY = trajectory.finalPosition.y - 20f
+            // 
+            // // Arka plan
+            // val trajectoryBgPaint = Paint().apply {
+            //     this.color = Color.parseColor("#CC000000")
+            //     style = Paint.Style.FILL
+            // }
+            // canvas.drawRect(
+            //     textX - 8,
+            //     textY - textBounds.height() - 8,
+            //     textX + textBounds.width() + 8,
+            //     textY + 8,
+            //     trajectoryBgPaint
+            // )
+            // 
+            // textPaint.color = color
+            // canvas.drawText(numberText, textX, textY, textPaint)
             
             // Çarpışma noktalarını işaretle
             trajectory.collisions.forEach { collision ->
